@@ -89,6 +89,11 @@ connect()               // AB_CDP_PORT or 9222; catch → managed profile
 evalJs("...")           // eval + JSON parse of result
 close()                 // managed browser only; never call in connect mode
 sleep(ms)
+
+// network capture (DevTools Network tab)
+requests({filter?, type?, method?, status?, clear?})  // captured requests list
+request(requestId)      // full request/response with headers+body
+harStart("text|all|none") / harStop(path)             // HAR recording
 ```
 
 ## Don't

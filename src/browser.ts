@@ -36,3 +36,26 @@ export async function evalJs(expr: string): Promise<any> {
 }
 
 export const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// --- network capture (DevTools Network) ---
+// Список запросов; opts: {filter?, type?, method?, status?}
+export async function requests(opts: {
+  filter?: string; type?: string; method?: string; status?: string; clear?: boolean;
+} = {}): Promise<any[]> {
+  const args = ["requests"];
+  if (opts.filter) args.push("--filter", opts.filter);
+  if (opts.type) args.push("--type", opts.type);
+  if (opts.method) args.push("--method", opts.method);
+  if (opts.status) args.push("--status", opts.status);
+  if (opts.clear) args.push("--clear");
+  const data = await ab("network", ...args);
+  return data?.requests ?? data ?? [];
+}
+
+// Полный request/response одного запроса (headers + body)
+export const request = (id: string) => ab("network", "request", id);
+
+// HAR-запись: start → работа адаптера → stop(path)
+export const harStart = (content: "text" | "all" | "none" = "text") =>
+  ab("network", "har", "start", "--content", content);
+export const harStop = (path: string) => ab("network", "har", "stop", path);
