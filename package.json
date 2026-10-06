@@ -1,0 +1,15 @@
+{
+  "name": "kkm-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "kkm-browser": "src/cli.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4"
+  }
+}
