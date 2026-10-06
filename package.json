@@ -6,6 +6,10 @@
   "bin": {
     "kkm-browser": "src/cli.ts"
   },
+  "exports": {
+    ".": "./src/cli.ts",
+    "./browser": "./src/browser.ts"
+  },
   "engines": {
     "node": ">=24"
   },

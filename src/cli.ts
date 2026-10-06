@@ -1,13 +1,16 @@
 #!/usr/bin/env node
-// agent-cli — диспетчер: cli <site> <command> [args...]
-// Адаптер = src/adapters/<site>/<command>.ts, экспортирует default async fn(ctx).
-// ctx = { args, browser } — импортируют * из ../browser.ts.
+// kkm-browser — диспетчер: kkm-browser <site> <command> [args...]
+// Адаптеры в ~/.kkm-browser/adapters/<site>/<command>.ts.
+// Контракт: default async fn(ctx) → данные; хелперы приходят в ctx —
+//   ctx.ab(cmd,...), ctx.open(url), ctx.evalJs(expr), ctx.connect(), ctx.sleep(ms), ctx.close()
+// Импорты из пакета не нужны — адаптер не в node_modules.
 import { readdir } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { pathToFileURL } from "node:url";
 
-export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const ADAPTERS = join(ROOT, "src", "adapters");
+export const KKM_HOME = join(homedir(), ".kkm-browser");
+const ADAPTERS = join(KKM_HOME, "adapters");
 
 async function list(): Promise<string[]> {
   const out: string[] = [];
@@ -18,14 +21,16 @@ async function list(): Promise<string[]> {
         if (f.endsWith(".ts")) out.push(`${site.name}/${f.slice(0, -3)}`);
       }
     }
-  } catch { /* adapters/ ещё нет */ }
+  } catch { /* ~/.kkm-browser/adapters/ ещё нет */ }
   return out.sort();
 }
 
-const [site, cmd, ...args] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const traceFlag = argv.includes("--trace");
+const [site, cmd, ...args] = argv.filter(a => a !== "--trace");
 
-if (!site || site === "list" || site === "--help") {
-  console.log((await list()).join("\n") || "no adapters");
+if (!site || site === "list" || site === "--help" || site === "-h") {
+  console.log((await list()).join("\n") || `no adapters — put them in ${ADAPTERS}/<site>/<cmd>.ts`);
   process.exit(0);
 }
 
@@ -34,13 +39,26 @@ let mod: any;
 try {
   mod = await import(pathToFileURL(file).href);
 } catch (e) {
-  console.error(`no adapter ${site}/${cmd} (${(e as Error).message})`);
+  console.error(`no adapter ${site}/${cmd} at ${file}`);
+  console.error((e as Error).message);
   process.exit(2);
 }
 
 try {
-  const result = await mod.default({ args, site, cmd });
+  const browser = await import("./browser.ts");
+  const ctx = { args, site, cmd, ...browser };
+  const result = await mod.default(ctx);
+  if (mod.validate && !mod.validate(result)) {
+    throw new Error(
+      `validate failed: ${site}/${cmd} returned unexpected shape — selectors likely drifted`
+    );
+  }
   if (result !== undefined) console.log(JSON.stringify(result, null, 2));
+  if (traceFlag) {
+    const { dumpTrace } = await import("./trace.ts");
+    const dir = await dumpTrace(`${site}/${cmd}`, null);
+    console.error(`trace: ${dir}`);
+  }
 } catch (err) {
   const { dumpTrace } = await import("./trace.ts");
   const dir = await dumpTrace(`${site}/${cmd}`, err);

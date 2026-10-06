@@ -1,70 +1,100 @@
 ---
 name: kkm-browser
-description: Site-as-CLI adapters over agent-browser — uniform `kkm-browser <site> <command>` surface, trace-on-failure debugging, adding new site adapters. Load when running `kkm-browser ...` commands, fixing a broken adapter, or writing a new adapter for a site.
+description: Site-as-CLI adapters over agent-browser — uniform `kkm-browser <site> <command>` surface, trace-on-failure debugging, result validators, adding new site adapters. Load when running `kkm-browser ...` commands, fixing a broken adapter, or writing a new adapter for a site.
 ---
 
 # kkm-browser
 
-Сайты как CLI-команды поверх `agent-browser`. Адаптер = TS-модуль `src/adapters/<site>/<command>.ts` (default export async fn), диспетчер `src/cli.ts` (npm-link → `kkm-browser`), трейс при падении автоматически. Node ≥24 (type stripping, сборки нет).
+Sites exposed as CLI commands on top of `agent-browser`. An adapter is a TS module at `~/.kkm-browser/adapters/<site>/<command>.ts` (default export = async fn). The dispatcher is `src/cli.ts`, exposed globally as `kkm-browser` via `npm link` / `npm i -g`. Failures automatically dump a trace; successful runs can be traced with `--trace`. Node ≥24 (native TS stripping, no build step).
 
 ## Usage
 
 ```bash
-kkm-browser list                    # все адаптеры
-kkm-browser <site> <command> [args] # вызов
+kkm-browser list                          # all adapters
+kkm-browser <site> <command> [args]       # invoke
+kkm-browser <site> <command> --trace      # invoke + keep trace even on success
 ```
 
-Стратегии (видно по коду адаптера):
-- **public** — `open()` + `evalJs()`, без логина
-- **cookie** — `connect()` к Chrome с `--remote-debugging-port=9222`, либо managed-профиль agent-browser если CDP нет
-- **ui** — `ab("snapshot")` / `ab("click", sel)` / `ab("fill", sel, text)` — сырые примитивы
-- **intercept** — `evalJs()` с fetch внутри страницы — сайт сам подписывает запрос
+Strategies (visible in adapter code, no tags):
+- **public** — `open()` + `evalJs()`, no login
+- **cookie** — `connect()` to Chrome with `--remote-debugging-port=9222`, falls back to managed agent-browser profile if CDP is absent
+- **ui** — `ab("snapshot")` / `ab("click", sel)` / `ab("fill", sel, text)` — raw agent-browser primitives
+- **intercept** — `evalJs()` running `fetch()` inside the page — the site signs the request itself
 
-## Autofix — адаптер упал
-
-Диспетчер ловит throw в адаптере и дампит в `traces/<ts>-<site>_<cmd>/`: `error.txt`, `a11y.txt`, `meta.json`, `page.png`.
-
-Протокол ремонта (≤3 раунда):
-1. `cat traces/<latest>/error.txt` — что сломалось
-2. `cat traces/<latest>/a11y.txt` + `page.png` — что сейчас на странице
-3. `cat traces/<latest>/meta.json` — на каком URL (редирект на логин = проблема авторизации, не адаптера)
-4. Правим `src/adapters/<site>/<cmd>.ts` (селекторы, JS в evalJs)
-5. `kkm-browser <site> <cmd>` — retry
-
-**Стоп-условия** (не чинить код):
-- в `meta.json` редирект на логин / QR → скажи пользователю залогиниться
-- CAPTCHA → не адаптер
-- `connect()` не находит Chrome → подсказать запуск Chrome с CDP
-
-## Author — новый адаптер
-
-1. `agent-browser open <url>` + `snapshot`/`eval` — recon: найти селекторы данных
-2. Шаблон — `references/reddit-frontpage.ts` (public-адаптер целиком). Общая форма:
-   ```ts
-   import { open, connect, evalJs, sleep } from "../../browser.ts";
-   export default async function ({ args }: { args: string[] }) { ...; return data; }
-   ```
-   Возвращаемое значение уходит в stdout как pretty JSON.
-3. Если нужен логин — проверяй по наличию контентных элементов, не по URL-редиректу (сайты редиректят по-разному)
-4. Вызов через `kkm-browser` — трейс уже включён
-
-Селекторы кладём максимально широко (`[class*=post], [data-post-id]` в одном query) — сайты чаще меняют классы, чем данные.
-
-## Хелперы (src/browser.ts)
+## Adapter contract
 
 ```ts
-import { ab, open, close, connect, evalJs, sleep } from "../../browser.ts";
+// ~/.kkm-browser/adapters/<site>/<cmd>.ts
+export default async function ({ args, open, connect, evalJs, sleep, close, ab }: any) {
+  // args: positional CLI args after <cmd>
+  // return value → stdout as pretty JSON
+  return data;
+}
 
-ab("snapshot")          // любая команда agent-browser, --json обёртка внутри
-open(url)
-connect()               // AB_CDP_PORT или 9222; catch → managed-профиль
-evalJs("...")           // eval + JSON-разбор результата
-close()                 // managed-браузер; в connect-режиме не звать
+// REQUIRED validator — dispatcher runs it on the result;
+// false → throw + trace dump (catches silent selector drift: [] or null fields)
+export const validate = (data: any): boolean => ...
 ```
 
-## Не делать
+No imports from the package — every helper arrives through `ctx`. Validator is **required**, not optional: write it so it fails loudly when the site changes shape, not just checks "did we get anything".
 
-- Не хардкодить список адаптеров — `kkm-browser list` источник истины
-- Не писать реестр/плагины — `src/adapters/` и есть реестр
-- Не звать `close()` в connect-режиме — это чужой Chrome
-- Не добавлять сборку — Node 24 ест .ts напрямую
+## Validators — be strict, not shallow
+
+A weak validator (`data.length > 0`) passes on `[{title: null, url: null}]` — silent garbage, the exact thing we're defending against. Write validators that check the *fields you actually use*:
+
+```ts
+export const validate = (posts: any[]) =>
+  Array.isArray(posts) &&
+  posts.length > 0 &&
+  posts.every(p => typeof p.id === "string" && p.title?.length > 0 && p.url?.startsWith("http"));
+```
+
+Good targets to check: required keys present, non-null, right types, plausible formats (URLs start with http, scores are numeric-ish). The validator is your regression detector — a site redesign that returns empty-shaped data must trip it.
+
+## Autofix — adapter failed
+
+Any throw (including `validate failed`) → `~/.kkm-browser/traces/<ts>-<site>_<cmd>/` with `error.txt`, `a11y.txt`, `meta.json`, `page.png`.
+
+Repair protocol (≤3 rounds):
+1. `cat traces/<latest>/error.txt` — what broke
+2. `a11y.txt` + `page.png` — what's actually on the page now
+3. `meta.json` — which URL (login redirect = auth problem, not adapter)
+4. Fix `~/.kkm-browser/adapters/<site>/<cmd>.ts` (selectors, evalJs JS)
+5. `kkm-browser <site> <cmd>` — retry
+
+**Stop conditions** (don't patch code):
+- `meta.json` shows login/QR redirect → tell the user to log in
+- CAPTCHA → not an adapter bug
+- `connect()` can't find Chrome → suggest launching Chrome with `--remote-debugging-port=9222 --user-data-dir=~/agent-cli/chrome-profile`
+
+## Authoring a new adapter
+
+1. Recon: `agent-browser open <url>` + `snapshot` / `eval` — find data selectors
+2. Template: `references/lobsters-frontpage.ts` (full public adapter). Skeleton:
+   ```ts
+   export default async function ({ args, open, evalJs, close }: any) { ...; return data; }
+   export const validate = (d: any) => /* strict field checks */;
+   ```
+3. For login-gated sites: detect auth by *content presence*, not URL redirects (sites redirect inconsistently)
+4. Invoke via `kkm-browser` — failure trace is automatic
+
+Selectors: cast wide (`[class*=post], [data-post-id]` in one query) — sites rename classes more often than they change data. Pair with a strict validator so drift trips loudly.
+
+## Helpers (src/browser.ts → ctx)
+
+```ts
+ab("snapshot")          // any agent-browser command, --json envelope unwrapped
+open(url)
+connect()               // AB_CDP_PORT or 9222; catch → managed profile
+evalJs("...")           // eval + JSON parse of result
+close()                 // managed browser only; never call in connect mode
+sleep(ms)
+```
+
+## Don't
+
+- Don't hardcode adapter lists — `kkm-browser list` is the source of truth
+- Don't build a registry/plugin system — `~/.kkm-browser/adapters/` is the registry
+- Don't `close()` in connect mode — that's the user's Chrome
+- Don't add a build step — Node 24 eats .ts natively
+- Don't write an adapter without `validate` — silent selector drift is the #1 failure mode
