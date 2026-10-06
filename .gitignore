@@ -3,3 +3,4 @@ traces/
 chrome-profile/
 .DS_Store
 src/adapters/vk/
+src/adapters/
