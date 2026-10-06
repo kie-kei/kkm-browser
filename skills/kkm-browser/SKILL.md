@@ -70,7 +70,7 @@ Repair protocol (≤3 rounds):
 ## Authoring a new adapter
 
 1. Recon: `agent-browser open <url>` + `snapshot` / `eval` — find data selectors
-2. Template: `references/lobsters-frontpage.ts` (full public adapter). Skeleton:
+2. Template: `references/adapter-template.ts` (full public adapter). Skeleton:
    ```ts
    export default async function ({ args, open, evalJs, close }: any) { ...; return data; }
    export const validate = (d: any) => /* strict field checks */;
